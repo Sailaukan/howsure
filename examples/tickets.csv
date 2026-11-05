@@ -1,0 +1,6 @@
+subject,body,team,refund,urgency
+Charged twice,I see two charges for order #4411. Please refund one.,billing,yes,Soon
+App crashes on login,"Since the update the app closes as soon as I log in.",technical,no,Urgent
+Change my address,I moved. How do I update my shipping address?,other,no,Routine
+Refund for late order,My order arrived two weeks late. I want my money back.,billing,yes,Soon
+Site down,"Checkout page returns error 500 for all our customers.",technical,no,Urgent

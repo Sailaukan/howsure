@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+howsure-demo/
+*.preds.jsonl
+*.policy.json
+*.report.html
+!examples/**

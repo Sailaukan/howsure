@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "howsure"
+version = "0.1.0"
+description = "Check whether a decision model's probabilities hold up on your labels (Jev, Drex, Kev, Mercury Decide, any System One API), then turn them into auto/review rules."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Shakhnazar Sailaukan" }]
+keywords = ["calibration", "decision models", "jev", "drex", "kev", "mercury", "system one", "llm", "classification"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+howsure = "howsure.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Sailaukan/howsure"
+Issues = "https://github.com/Sailaukan/howsure/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/howsure"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
