@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from howsure.data import DataError, answer_probs, example_id, load_examples, parse_label, validate_labels
+from howsure.data import BadAnswer, DataError, answer_probs, example_id, load_examples, parse_label, validate_labels
 
 CHOICE = {"type": "choice", "instructions": "Team?", "criteria": {"billing": "x", "technical": "y", "other": "z"}}
 NOUL = {"type": "noul", "instructions": "Refund?"}
@@ -38,8 +38,47 @@ def test_answer_probs_normalizes_and_orders_levels():
     assert keys == ["0", "1", "2"] and probs == [0.25, 0.25, 0.5]
     keys, probs = answer_probs("noul", {"noul": 0.8})
     assert keys == ["false", "true"] and abs(probs[1] - 0.8) < 1e-12
-    keys, probs = answer_probs("choice", {"probabilities": {"a": 2, "b": 2}})
-    assert probs == [0.5, 0.5]
+    keys, probs = answer_probs("choice", {"probabilities": {"a": 0.51, "b": 0.5}})  # rounding
+    assert abs(sum(probs) - 1) < 1e-12
+
+
+@pytest.mark.parametrize(
+    "qtype, answer, options, reason",
+    [
+        ("noul", {}, None, "unreadable"),
+        ("noul", {"noul": 5}, None, "unreadable"),
+        ("noul", {"noul": -0.1}, None, "unreadable"),
+        ("noul", {"noul": float("nan")}, None, "unreadable"),
+        ("noul", {"noul": True}, None, "unreadable"),
+        ("noul", {"noul": "0.9"}, None, "unreadable"),
+        ("choice", {}, None, "unreadable"),
+        ("choice", {"probabilities": {}}, None, "unreadable"),
+        ("choice", {"probabilities": {"a": 1.5, "b": -0.5}}, None, "unreadable"),
+        ("choice", {"probabilities": {"a": "0.9", "b": "0.1"}}, None, "unreadable"),
+        ("choice", {"probabilities": {"a": float("nan"), "b": 0.5}}, None, "unreadable"),
+        ("choice", {"probabilities": {"a": 0.4, "b": 0.1}}, None, "add up"),
+        ("choice", {"probabilities": {"a": 2, "b": 2}}, None, "add up"),
+        ("choice", {"probabilities": {"invented": 1.0}}, ["a", "b"], "don't match"),
+        ("choice", {"probabilities": {"a": 1.0}}, ["a", "b"], "don't match"),
+        ("choice", {"probabilities": {"a": 0.5, "b": 0.3, "c": 0.2}}, ["a", "b"], "don't match"),
+        ("score", {"probabilities": {"0": 0.5, "2": 0.5}}, ["x", "y", "z"], "don't match"),
+        ("score", {"probabilities": {"0": 0.5, "1": 0.3, "2": 0.1, "3": 0.1}}, ["x", "y", "z"], "don't match"),
+        ("score", {"probabilities": {"low": 0.5, "high": 0.5}}, None, "don't match"),
+        ("score", {"probabilities": {"²": 0.5, "1": 0.5}}, None, "don't match"),
+    ],
+)
+def test_answers_that_cannot_be_trusted_are_refused(qtype, answer, options, reason):
+    with pytest.raises(BadAnswer, match=reason):
+        answer_probs(qtype, answer, options)
+
+
+def test_score_levels_can_be_named_by_the_legend_or_the_question():
+    answer = {"probabilities": {"Low": 0.2, "High": 0.8}, "legend": ["Low", "High"]}
+    assert answer_probs("score", answer) == (["0", "1"], [0.2, 0.8])
+    assert answer_probs("score", {"probabilities": {"Low": 0.2, "High": 0.8}}, ["Low", "High"]) == (
+        ["0", "1"],
+        [0.2, 0.8],
+    )
 
 
 def test_example_id_ignores_labels():
@@ -61,8 +100,10 @@ def test_csv_with_shared_questions(tmp_path):
 
 
 def test_validate_labels_reports_every_bad_label():
-    recs = [{"state": "s", "questions": {"team": dict(CHOICE, label="sales")}},
-            {"state": "t", "questions": {"team": dict(CHOICE, label="nope")}}]
+    recs = [
+        {"state": "s", "questions": {"team": dict(CHOICE, label="sales")}},
+        {"state": "t", "questions": {"team": dict(CHOICE, label="nope")}},
+    ]
     with pytest.raises(DataError) as e:
         validate_labels(recs)
     assert "example 1" in str(e.value) and "example 2" in str(e.value)

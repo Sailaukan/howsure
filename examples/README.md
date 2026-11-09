@@ -1,6 +1,6 @@
 # Example data formats
 
-Five hand-written tickets, the same data in both formats. Real calibration needs a few hundred.
+Five hand-written tickets, the same data in both formats. Real calibration needs at least 500.
 
 - `tickets.jsonl`: one System One request per line, with a `label` on each question (Kev's format).
 - `tickets.csv` + `questions.json`: a spreadsheet. Columns named after a question are its labels;

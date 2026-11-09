@@ -75,7 +75,8 @@ th{color:var(--ink2);font-weight:500}
 .overview td,.overview th{padding-right:20px}
 .note{background:var(--warn-bg);color:var(--warn-ink);border-radius:8px;padding:8px 12px;margin:8px 0;font-size:14px}
 code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--page);padding:1px 5px;border-radius:4px}
-pre{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--page);padding:12px;border-radius:8px;overflow-x:auto}
+pre{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--page);padding:12px;border-radius:8px;
+overflow-x:auto}
 """
 
 _JS = """
@@ -151,9 +152,7 @@ def _reliability_svg(before: list[dict], after: list[dict]) -> str:
         out.append(f'<text x="{x:.1f}" y="{H - MB + 18}" text-anchor="middle">{t * 100:.0f}%</text>')
         t = round(t + step, 6)
     out.append(f'<line class="axis" x1="{ML}" x2="{W - MR}" y1="{MT + ph}" y2="{MT + ph}"/>')
-    out.append(
-        f'<line class="ref" x1="{sx(lo):.1f}" y1="{sy(lo):.1f}" x2="{sx(1):.1f}" y2="{sy(1):.1f}"/>'
-    )
+    out.append(f'<line class="ref" x1="{sx(lo):.1f}" y1="{sy(lo):.1f}" x2="{sx(1):.1f}" y2="{sy(1):.1f}"/>')
     out.append(f'<text x="{ML + pw / 2:.1f}" y="{H - 6}" text-anchor="middle">model says</text>')
     out.append(
         f'<text x="12" y="{MT + ph / 2:.1f}" text-anchor="middle" '
@@ -162,16 +161,20 @@ def _reliability_svg(before: list[dict], after: list[dict]) -> str:
     for series, color, name in ((before, "var(--s2)", "Before"), (after, "var(--s1)", "After")):
         if not series:
             continue
-        d = " ".join(f'{"M" if i == 0 else "L"}{sx(p["confidence"]):.1f},{sy(p["accuracy"]):.1f}' for i, p in enumerate(series))
+        d = " ".join(
+            f"{'M' if i == 0 else 'L'}{sx(p['confidence']):.1f},{sy(p['accuracy']):.1f}" for i, p in enumerate(series)
+        )
         out.append(f'<path class="line" d="{d}" stroke="{color}"/>')
         for p in series:
             cx, cy = sx(p["confidence"]), sy(p["accuracy"])
             out.append(f'<circle class="dot" cx="{cx:.1f}" cy="{cy:.1f}" r="4.5" fill="{color}"/>')
-            tip = _tip([
-                f'right {_pct(p["accuracy"])} of the time',
-                f'{name.lower()}: model said {_pct(p["confidence"])}',
-                f'{p["count"]} examples',
-            ])
+            tip = _tip(
+                [
+                    f"right {_pct(p['accuracy'])} of the time",
+                    f"{name.lower()}: model said {_pct(p['confidence'])}",
+                    f"{p['count']} examples",
+                ]
+            )
             out.append(f'<circle class="hit" cx="{cx:.1f}" cy="{cy:.1f}" r="12" tabindex="0" data-tip="{tip}"/>')
     out.append("</svg>")
     return "".join(out)
@@ -191,7 +194,7 @@ def _risk_svg(chart: dict, max_error: float, sure: float) -> str:
     pts = [[round(sx(c), 1), round(sy(e), 1), _pct(c), _pct(e, 1), f"{t:.3f}"] for c, e, t in curve]
     out = [
         f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Errors versus share of cases handled automatically" '
-        f"data-curve=\"{_esc(json.dumps(pts))}\">"
+        f'data-curve="{_esc(json.dumps(pts))}">'
     ]
     for i in range(5):
         v = ymax * i / 4
@@ -209,14 +212,14 @@ def _risk_svg(chart: dict, max_error: float, sure: float) -> str:
     out.append(
         f'<line class="ref" x1="{ML}" x2="{W - MR}" y1="{ty:.1f}" y2="{ty:.1f}"/>'
         f'<text class="lbl" x="{tx}" y="{ty + 16:.1f}" text-anchor="{anchor}">'
-        f'target {_pct(max_error, 1 if max_error < 0.1 else 0)}</text>'
+        f"target {_pct(max_error, 1 if max_error < 0.1 else 0)}</text>"
     )
     out.append(f'<text x="{ML + pw / 2:.1f}" y="{H - 6}" text-anchor="middle">share handled automatically</text>')
     out.append(
         f'<text x="12" y="{MT + ph / 2:.1f}" text-anchor="middle" '
         f'transform="rotate(-90 12 {MT + ph / 2:.1f})">errors among them</text>'
     )
-    d = " ".join(f'{"M" if i == 0 else "L"}{p[0]},{p[1]}' for i, p in enumerate(pts))
+    d = " ".join(f"{'M' if i == 0 else 'L'}{p[0]},{p[1]}" for i, p in enumerate(pts))
     out.append(f'<path class="line" d="{d}" stroke="var(--s1)"/>')
 
     marks = []
@@ -246,35 +249,63 @@ def _risk_svg(chart: dict, max_error: float, sure: float) -> str:
 def _facts(q: dict, max_error: float, sure: float) -> list[str]:
     s = q["stats"]
     facts = [
-        f'Accuracy {_pct(s["accuracy_after"])}. Calibration error {_pct(s["ece_before"], 1)} → '
-        f'{_pct(s["ece_after"], 1)} after the fix ({describe(q["calibration"])}).'
+        f"Accuracy {_pct(s['accuracy_after'])}. Calibration error {_pct(s['ece_before'], 1)} → "
+        f"{_pct(s['ece_after'], 1)} after the fix ({describe(q['calibration'])})."
     ]
     if q["cutoff"] is None:
         facts.append(f"No cutoff keeps errors within {_pct(max_error, 1)}: send this question to review.")
     else:
         facts.append(
-            f'<b>Auto-handle when p ≥ {q["cutoff"]:.3f}</b>: {_pct(s["coverage"])} of cases, '
-            f'with {_pct(s["error"], 1)} errors on held-out examples.'
+            f"<b>Auto-handle when p ≥ {q['cutoff']:.3f}</b>: {_pct(s['coverage'])} of cases, "
+            f"with {_pct(s['error'], 1)} errors on held-out examples."
         )
     if q["safe_cutoff"] is not None:
         facts.append(
-            f'{_pct(sure)} sure version: p ≥ {q["safe_cutoff"]:.3f} handles {_pct(s["safe_coverage"])} of cases, '
-            f'and the true error rate is at most {_pct(max_error, 1)} with {_pct(sure)} confidence.'
+            f"{_pct(sure)} sure version: p ≥ {q['safe_cutoff']:.3f} handles {_pct(s['safe_coverage'])} of cases, "
+            f"and the true error rate is at most {_pct(max_error, 1)} with {_pct(sure)} confidence."
         )
     else:
         facts.append(f"Not enough examples yet to promise {_pct(max_error, 1)} with {_pct(sure)} confidence.")
     more = s.get("safe_coverage_with_more")
     if more and q["cutoff"] is not None:
         facts.append(
-            f'More labels would help: with about {2 * s["n"]:,} you could expect a {_pct(sure)}-sure cutoff '
-            f'covering ~{_pct(more["2"])}; with {4 * s["n"]:,}, ~{_pct(more["4"])}.'
+            f"More labels would help: with about {2 * s['n']:,} you could expect a {_pct(sure)}-sure cutoff "
+            f"covering ~{_pct(more['2'])}; with {4 * s['n']:,}, ~{_pct(more['4'])}."
         )
     if s.get("score_rounding_mismatch"):
         facts.append(
-            f'Rounding the model\'s <code>score</code> field disagrees with its most likely level in '
-            f'{_pct(s["score_rounding_mismatch"])} of cases. Act on <code>howsure.answer</code> instead.'
+            f"Rounding the model's <code>score</code> field disagrees with its most likely level in "
+            f"{_pct(s['score_rounding_mismatch'])} of cases. Act on <code>howsure.answer</code> instead."
+        )
+    other = s["uncommon"]
+    facts.append(
+        f"Always answering <code>{_esc(s['common_answer'])}</code> would be right {_pct(s['common_accuracy'])} "
+        f"of the time. The other {other['n']:,} held-out cases: {other['right']:,} right, {other['wrong']:,} wrong, "
+        f"{other['review']:,} to review."
+    )
+    if other["lost_to_calibration"] or other["gained_from_calibration"]:
+        facts.append(
+            f"Calibration changed {other['lost_to_calibration']:,} of those from right to wrong, "
+            f"and {other['gained_from_calibration']:,} from wrong to right."
         )
     return facts
+
+
+def _groups_table(s: dict) -> str:
+    groups = s.get("groups")
+    if not groups:
+        return ""
+    body = "".join(
+        f"<tr><td>{_esc(g['group'])}</td><td>{g['n']:,}</td><td>{_pct(g['coverage'])} at {_pct(g['error'], 1)}</td>"
+        f"<td>{_pct(g.get('unseen_coverage'))} at {_pct(g.get('unseen_error'), 1)}</td></tr>"
+        for g in groups
+    )
+    return (
+        "<details><summary>By document type</summary><table><tr><th></th><th>Examples</th><th>This policy</th>"
+        f"<th>Fitted without this type</th></tr>{body}</table>"
+        '<p class="hint">Share auto-handled, and errors among those. The last column is the one to trust for '
+        "documents the policy has never seen.</p></details>"
+    )
 
 
 def _table(s: dict) -> str:
@@ -290,14 +321,14 @@ def _table(s: dict) -> str:
         for name, a, b in rows
     )
     split = (
-        f'Fitted on {s["n_fit"]} examples, checked on {s["n_check"]} others.'
+        f"Fitted on {s['n_fit']} examples, checked on {s['n_check']} others."
         if s["held_out"]
-        else f'Only {s["n"]} examples, so it was fitted and checked on the same ones: numbers are optimistic.'
+        else f"Only {s['n']} examples, so it was fitted and checked on the same ones: numbers are optimistic."
     )
     return (
         "<details><summary>Numbers</summary>"
         "<table><tr><th></th><th>Before</th><th>After</th></tr>"
-        f"{body}</table><p class=\"hint\">{_esc(split)}</p></details>"
+        f'{body}</table><p class="hint">{_esc(split)}</p></details>'
     )
 
 
@@ -306,12 +337,12 @@ def render(policy: Policy, charts: dict, notes: list[str], policy_path: str = "p
     max_error, sure = d["target"]["max_error"], d["target"]["sure"]
     title = f"howsure · {d['model']}"
     parts = [
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width,initial-scale=1">',
         f"<title>{_esc(title)}</title><style>{_CSS}</style></head><body><main>",
         f"<h1>Can you trust {_esc(d['model'])}?</h1>",
         f'<p class="sub">Target: at most {_pct(max_error, 1)} errors on auto-handled cases · '
-        f'{d["data"]["examples"]:,} labeled examples · {_esc(d["created"])}</p>',
+        f"{d['data']['examples']:,} labeled examples · {_esc(d['created'])}</p>",
     ]
 
     overview = "".join(
@@ -335,7 +366,8 @@ def render(policy: Policy, charts: dict, notes: list[str], policy_path: str = "p
         parts.append(
             f'<section class="card"><div class="head"><h2>{_esc(qid)}</h2>'
             f'<span class="tag">{_esc(q["type"])} · {q["stats"]["n"]:,} labeled</span></div>'
-            f'<ul class="facts">{facts}</ul>'
+            + "".join(f'<p class="note">{_esc(w)}</p>' for w in q["stats"]["warnings"])
+            + f'<ul class="facts">{facts}</ul>'
         )
         if ch:
             parts.append(
@@ -343,23 +375,25 @@ def render(policy: Policy, charts: dict, notes: list[str], policy_path: str = "p
                 '<p class="hint">When the model said this…, it was right this often. On the gray line = honest.</p>'
                 '<div class="legend"><span><i class="key" style="background:var(--s2)"></i>Before</span>'
                 '<span><i class="key" style="background:var(--s1)"></i>After calibration</span></div>'
-                f'{_reliability_svg(ch["reliability_before"], ch["reliability_after"])}</figure>'
-                '<figure><figcaption>How much can you automate?</figcaption>'
+                f"{_reliability_svg(ch['reliability_before'], ch['reliability_after'])}</figure>"
+                "<figure><figcaption>How much can you automate?</figcaption>"
                 '<p class="hint">Lower the cutoff to automate more, and errors rise. Hover to explore.</p>'
-                f'{_risk_svg(ch, max_error, sure)}</figure></div>'
+                f"{_risk_svg(ch, max_error, sure)}</figure></div>"
             )
-        parts.append(_table(q["stats"]) + "</section>")
+        parts.append(_table(q["stats"]) + _groups_table(q["stats"]) + "</section>")
 
     first = _esc(next(iter(d["questions"])))
     pfile = _esc(policy_path)
     parts.append(
         '<section class="card"><h2>Use it</h2>'
-        "<p>Run the proxy and point your app at it instead of the model server. Each answer gets a "
-        "<code>howsure</code> block with the calibrated probability and <code>action: auto | review</code>.</p>"
-        f"<pre>howsure serve {pfile} --upstream http://localhost:8000</pre>"
+        "<p>Add this policy to a <code>howsure gateway</code> config and point your app at the gateway. Each "
+        "answer gets a <code>howsure</code> block with the calibrated probability and "
+        "<code>action: auto | review</code>.</p>"
+        f'<pre>{{"models": {{"model": {{"url": "http://localhost:8000", "policy": "{pfile}"}}}}, '
+        '"default": "model"}\n\nhowsure gateway gateway.json</pre>'
         "<p>Or in Python:</p>"
-        f"<pre>import howsure\npolicy = howsure.load(\"{pfile}\")\n"
-        f"decision = policy.decide(response)[\"{first}\"]\nif decision.auto: ...</pre></section>"
+        f'<pre>import howsure\npolicy = howsure.load("{pfile}")\n'
+        f'decision = policy.decide(response)["{first}"]\nif decision.auto: ...</pre></section>'
     )
     parts.append(f'<div id="tip" role="tooltip"></div><script>{_JS}</script></main></body></html>')
     return "".join(parts)

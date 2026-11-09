@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 SUPPORTED_TYPES = ("choice", "noul", "score")
+SUM_TOLERANCE = 0.02  # models round their probabilities, so they don't add up to exactly 1
 _TRUE = {"true", "yes", "y", "1"}
 _FALSE = {"false", "no", "n", "0"}
 
@@ -26,7 +27,11 @@ class DataError(ValueError):
     """A problem with the user's data, with a message meant for people."""
 
 
-def _hash(obj: Any) -> str:
+class BadAnswer(ValueError):
+    """A model's answer that can't be trusted. The message says why."""
+
+
+def stable_hash(obj: Any) -> str:
     raw = json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -114,12 +119,22 @@ def request_of(rec: dict, model: str | None = None) -> dict:
 
 def example_id(rec: dict) -> str:
     """Model-independent id of an example (state + questions, labels excluded)."""
-    return _hash(request_of(rec))
+    return stable_hash(request_of(rec))
 
 
 def fingerprint(qdef: dict) -> str:
     """Identifies a question's wording and options, so a policy notices when they change."""
-    return _hash({k: qdef.get(k) for k in ("type", "instructions", "criteria")})
+    return stable_hash({k: qdef.get(k) for k in ("type", "instructions", "criteria")})
+
+
+def field_of(rec: dict, path: str) -> str | None:
+    """A record's value at a dotted path like ``meta.doc_type``, as text."""
+    value: Any = rec
+    for part in path.split("."):
+        if not isinstance(value, dict) or value.get(part) is None:
+            return None
+        value = value[part]
+    return str(value)
 
 
 # ---------------------------------------------------------------- labels and answers
@@ -174,35 +189,48 @@ def parse_label(qdef: dict, value: Any, options: list[str] | None = None) -> int
     raise DataError(f"label {value!r} is not one of the options ({shown})")
 
 
-def answer_probs(qtype: str, answer: dict, levels: list[str] | None = None) -> tuple[list[str], list[float]]:
+def _is_number(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def answer_probs(qtype: str, answer: dict, options: list[str] | None = None) -> tuple[list[str], list[float]]:
     """Option keys and normalized probabilities from one System One answer.
 
     choice: keys are option names; score: level indices as strings ("0", "1", ...);
-    noul: ["false", "true"].
+    noul: ["false", "true"]. Pass the question's options to check the answer covers them.
+
+    Raises BadAnswer rather than guess: rescaling a distribution over options nobody asked
+    about, or over only some of them, would turn it into a confident answer.
     """
     if qtype == "noul":
-        p = min(1.0, max(0.0, float(answer["noul"])))
+        p = answer.get("noul")
+        if not _is_number(p) or not 0 <= p <= 1:
+            raise BadAnswer("unreadable answer")
         return ["false", "true"], [1.0 - p, p]
     probs = answer.get("probabilities")
-    if not isinstance(probs, dict) or not probs:
-        raise ValueError("answer has no probabilities")
+    if not isinstance(probs, dict) or not probs or not all(_is_number(v) and v >= 0 for v in probs.values()):
+        raise BadAnswer("unreadable answer")
     if qtype == "score":
-        legend = list(answer.get("legend") or levels or [])
+        legend = answer.get("legend") if isinstance(answer.get("legend"), list) else (options or [])
 
         def level(k: str) -> int:
-            if str(k).isdigit():
+            if str(k).isdecimal():
                 return int(k)
             if k in legend:
                 return legend.index(k)
-            raise ValueError(f"unknown level {k!r}")
+            raise BadAnswer("answer's options don't match the question")
 
-        items = sorted(((level(k), float(v)) for k, v in probs.items()), key=lambda t: t[0])
+        items = sorted(((level(k), v) for k, v in probs.items()), key=lambda t: t[0])
         keys, vals = [str(i) for i, _ in items], [v for _, v in items]
+        matches = not options or [i for i, _ in items] == list(range(len(options)))
     else:
-        keys, vals = list(probs.keys()), [float(v) for v in probs.values()]
+        keys, vals = list(probs.keys()), list(probs.values())
+        matches = not options or set(keys) == set(options)
+    if not matches:
+        raise BadAnswer("answer's options don't match the question")
     total = sum(vals)
-    if total <= 0:
-        raise ValueError("probabilities sum to zero")
+    if abs(total - 1) > SUM_TOLERANCE:
+        raise BadAnswer("probabilities don't add up to 1")
     return keys, [v / total for v in vals]
 
 
@@ -215,6 +243,7 @@ class Obs:
     label: int  # index into probs
     keys: list[str]
     raw_score: float | None = None
+    group: str | None = None  # document type or similar, from ``fit --by``
 
 
 def validate_labels(records: list[dict]) -> Counter:
@@ -241,18 +270,24 @@ def validate_labels(records: list[dict]) -> Counter:
     return counts
 
 
-def observations(records: list[dict]) -> tuple[dict[str, list[Obs]], dict[str, dict], list[str]]:
+def observations(records: list[dict], by: str | None = None) -> tuple[dict[str, list[Obs]], dict[str, dict], list[str]]:
     """Group labeled answers by question. Returns (observations, question info, notes)."""
     obs: dict[str, list[Obs]] = {}
     info: dict[str, dict] = {}
     skipped: Counter = Counter()
     any_answers = False
+    grouped = ungrouped = 0
+    seen: set[tuple] = set()
     for i, rec in enumerate(records, 1):
         answers = rec.get("answers")
         if not isinstance(answers, dict):
             continue
         any_answers = True
         eid = example_id(rec)
+        group = field_of(rec, by) if by else None
+        if by:
+            grouped += group is not None
+            ungrouped += group is None
         for qid, qdef in rec["questions"].items():
             value = label_of(rec, qid)
             if value is None:
@@ -267,8 +302,8 @@ def observations(records: list[dict]) -> tuple[dict[str, list[Obs]], dict[str, d
                 continue
             try:
                 keys, probs = answer_probs(qtype, ans, option_names(qdef))
-            except (KeyError, TypeError, ValueError):
-                skipped[(qid, "unreadable answer")] += 1
+            except BadAnswer as e:
+                skipped[(qid, str(e))] += 1
                 continue
             try:
                 if qtype == "choice":
@@ -286,11 +321,17 @@ def observations(records: list[dict]) -> tuple[dict[str, list[Obs]], dict[str, d
             if entry["type"] != qtype:
                 raise DataError(f"question {qid!r} is {entry['type']} in some examples and {qtype} in others")
             entry["fingerprints"].add(fingerprint(qdef))
+            if (qid, eid, y) in seen:  # an exact repeat isn't new evidence, and would make every promise overconfident
+                skipped[(qid, "exact duplicate of another example")] += 1
+                continue
+            seen.add((qid, eid, y))
             raw_score = ans.get("score") if qtype == "score" else None
-            obs.setdefault(qid, []).append(Obs(eid, probs, y, keys, raw_score))
+            obs.setdefault(qid, []).append(Obs(eid, probs, y, keys, raw_score, group))
     if not any_answers:
-        raise DataError(
-            "No model answers found. Run `howsure run` first, or add an 'answers' object to each line."
-        )
+        raise DataError("No model answers found. Run `howsure run` first, or add an 'answers' object to each line.")
+    if by and not grouped:
+        raise DataError(f"No example has a {by!r} field to group by. It can be a dotted path like meta.doc_type.")
     notes = [f"{qid}: skipped {n} example(s): {why}" for (qid, why), n in skipped.items()]
+    if ungrouped:
+        notes.append(f"{ungrouped} example(s) have no {by!r} field, so they're left out of the per-group results")
     return obs, info, notes

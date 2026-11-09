@@ -7,6 +7,7 @@ examples it hasn't answered yet.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import sys
@@ -22,6 +23,16 @@ from .data import DataError, example_id, read_jsonl, request_of, validate_labels
 PRESETS = {"openrouter": "https://openrouter.ai/api"}
 BACKOFF_SECONDS = 1.0  # first retry delay; doubles each attempt
 ATTEMPTS = 4
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib would re-send the API key to wherever a redirect points."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None  # urllib then raises the 3xx as an HTTPError
+
+
+OPENER = urllib.request.build_opener(_NoRedirects)
 
 
 def base_url(url: str) -> str:
@@ -62,24 +73,34 @@ def post_json(url: str, body: dict, key: str | None, timeout: float = 300) -> di
     )
     if key:
         req.add_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with OPENER.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
+def _error_text(e: urllib.error.HTTPError) -> str:
+    try:
+        detail = e.read()[:300].decode("utf-8", "replace").strip()
+    except (OSError, http.client.HTTPException):
+        detail = ""
+    return f"HTTP {e.code}: {detail}" if detail else f"HTTP {e.code}"
+
+
 def call(url: str, body: dict, key: str | None) -> dict:
-    """POST with retries on rate limits, server errors and dropped connections."""
+    """POST with retries on rate limits, server errors, dropped connections and garbled replies."""
     last = "no attempt made"
     for attempt in range(ATTEMPTS):
         if attempt:
             time.sleep(min(30.0, BACKOFF_SECONDS * 2 ** (attempt - 1)))
         try:
-            return post_json(url, body, key)
+            response = post_json(url, body, key)
+            if isinstance(response, dict):
+                return response
+            last = "response is not a JSON object"
         except urllib.error.HTTPError as e:
-            detail = e.read()[:300].decode("utf-8", "replace").strip()
-            last = f"HTTP {e.code}: {detail}" if detail else f"HTTP {e.code}"
+            last = _error_text(e)
             if e.code not in (408, 409, 429) and e.code < 500:
                 raise CallError(last) from None
-        except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as e:
+        except (OSError, http.client.HTTPException, ValueError) as e:
             last = str(getattr(e, "reason", e))
     raise CallError(last)
 
@@ -105,6 +126,9 @@ def _output_line(rec: dict, resp: dict, model: str | None) -> dict:
     for k in ("usage", "latency_ms"):
         if k in resp:
             line[k] = resp[k]
+    served = resp.get("served_model") or resp.get("model")  # the exact version, so a policy can notice a new one
+    if served:
+        line["served_model"] = served
     return line
 
 
@@ -135,7 +159,10 @@ def run(
             todo.append(rec)
     result = RunResult(out_path)
     if todo:
-        log(f"Asking {ep} about {len(todo)} example(s)" + (f" ({len(records) - len(todo)} already done)" if len(todo) < len(records) else ""))
+        log(
+            f"Asking {ep} about {len(todo)} example(s)"
+            + (f" ({len(records) - len(todo)} already done)" if len(todo) < len(records) else "")
+        )
 
     lock = threading.Lock()
     done = 0
@@ -173,9 +200,10 @@ def run(
         hit = cache.get(_cache_key(rec, model))
         if hit:
             final.append(_output_line(rec, hit, model))
+    others = [line for line in cache.values() if line.get("model") != model]  # never drop answers already paid for
     tmp = out_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        for line in final:
+        for line in final + others:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
     os.replace(tmp, out_path)
     result.answered = len(final)

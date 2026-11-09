@@ -1,16 +1,41 @@
-"""run (client) and serve (proxy) against a fake System One server."""
+"""run (client) against a fake System One server."""
 
+import http.client
 import json
 import threading
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from howsure import client, demo
 from howsure.data import DataError, read_jsonl
-from howsure.policy import fit
-from howsure.proxy import make_server
+
+
+def _serve_once(reply, seen=None):
+    """A tiny server that gives one kind of reply and notes every request. Returns its URL."""
+
+    class H(BaseHTTPRequestHandler):
+        def _handle(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if seen is not None:
+                seen.append(body)
+            status, obj, *headers = reply(body)
+            data = json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(data)))
+            for name, value in headers:
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(data)
+
+        do_POST = do_GET = _handle
+
+        def log_message(self, *a):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_port}"
 
 
 class FakeModel:
@@ -39,7 +64,11 @@ class FakeModel:
                     if q["type"] == "noul":
                         answers[qid] = {"type": "noul", "noul": 0.9}
                     else:
-                        opts = list(q["criteria"]) if q["type"] == "choice" else [str(i) for i in range(len(q["criteria"]))]
+                        opts = (
+                            list(q["criteria"])
+                            if q["type"] == "choice"
+                            else [str(i) for i in range(len(q["criteria"]))]
+                        )
                         probs = {o: (0.8 if i == 0 else 0.2 / (len(opts) - 1)) for i, o in enumerate(opts)}
                         answers[qid] = {"type": q["type"], "probabilities": probs}
                 self._send(200, {"answers": answers, "latency_ms": 1.0})
@@ -129,20 +158,69 @@ def test_endpoint_presets():
     assert client.endpoint("http://x/v1/systemone") == "http://x/v1/systemone"
 
 
-def test_proxy_annotates_and_passes_through(model):
-    policy = fit(demo.make_records())[0]
-    server = make_server(policy, model.url, port=0, quiet=True)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_port}"
+def test_run_records_the_exact_model_version(tmp_path):
+    served = _serve_once(
+        lambda body: (200, {"model": "vendor/m-20260930", "answers": {"refund": {"type": "noul", "noul": 0.9}}})
+    )
+    out = str(tmp_path / "p.jsonl")
+    client.run(labeled(1), served, out, log=lambda m: None)
+    assert read_jsonl(out)[0]["served_model"] == "vendor/m-20260930"
+    client.run(labeled(1), served, out, log=lambda m: None)  # and keeps it when resuming
+    assert read_jsonl(out)[0]["served_model"] == "vendor/m-20260930"
+
+
+def test_keys_do_not_follow_redirects(tmp_path, monkeypatch):
+    monkeypatch.setattr(client, "BACKOFF_SECONDS", 0.0)
+    stolen = []
+    elsewhere = _serve_once(lambda body: (200, {"answers": {}}), seen=stolen)
+    moved = _serve_once(lambda body: (302, {}, ("Location", elsewhere)))
+    with pytest.raises(client.CallError, match="302"):
+        client.call(moved + "/v1/systemone", {"state": "x"}, "secret")
+    assert stolen == []
+
+
+def test_a_dropped_response_is_retried_not_a_crash(monkeypatch):
+    monkeypatch.setattr(client, "BACKOFF_SECONDS", 0.0)
+    calls = []
+
+    def truncated(*args, **kwargs):
+        calls.append(1)
+        raise http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(client, "post_json", truncated)
+    with pytest.raises(client.CallError):
+        client.call("http://x", {}, None)
+    assert len(calls) == client.ATTEMPTS
+
+
+def test_run_keeps_other_models_answers_in_a_shared_file(model, tmp_path):
+    out = str(tmp_path / "p.jsonl")
+    recs = labeled(3)
+    client.run(recs, model.url, out, model="m1", log=lambda m: None)
+    client.run(recs, model.url, out, model="m2", log=lambda m: None)
+    assert sorted(line["model"] for line in read_jsonl(out)) == ["m1", "m1", "m1", "m2", "m2", "m2"]
+
+
+@pytest.mark.parametrize("reply", [b"\xff\xfe not text", b"[1, 2, 3]"], ids=["not-utf8", "not-an-object"])
+def test_a_garbled_reply_is_retried_then_reported(monkeypatch, reply):
+    monkeypatch.setattr(client, "BACKOFF_SECONDS", 0.0)
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+        def log_message(self, *a):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
     try:
-        req = {"state": "Charged twice", "questions": demo.QUESTIONS}
-        r = urllib.request.Request(base + "/v1/systemone", data=json.dumps(req).encode(),
-                                   headers={"Content-Type": "application/json", "Authorization": "Bearer k"})
-        out = json.loads(urllib.request.urlopen(r).read())
-        assert out["answers"]["team"]["howsure"]["action"] in ("auto", "review")
-        assert out["answers"]["urgency"]["howsure"]["level"] == "Routine"
-        assert model.seen[-1][1] == "Bearer k"  # the app's key is forwarded
-        assert json.loads(urllib.request.urlopen(base + "/health").read()) == {"ok": True}
+        with pytest.raises(client.CallError):
+            client.call(f"http://127.0.0.1:{server.server_port}/v1/systemone", {"state": "x"}, None)
     finally:
         server.shutdown()
         server.server_close()

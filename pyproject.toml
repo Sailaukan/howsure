@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "howsure"
-version = "0.1.0"
-description = "Check whether a decision model's probabilities hold up on your labels (Jev, Drex, Kev, Mercury Decide, any System One API), then turn them into auto/review rules."
+dynamic = ["version"]
+description = "An open-source gateway for any System One decision model. Calibrates each one on your labels and keeps errors on auto-handled answers under a target."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Shakhnazar Sailaukan" }]
-keywords = ["calibration", "decision models", "jev", "drex", "kev", "mercury", "system one", "llm", "classification"]
+keywords = ["gateway", "calibration", "decision models", "jev", "drex", "kev", "mercury", "system one", "llm", "classification"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Intended Audience :: Developers",
@@ -19,7 +19,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "ruff>=0.6"]
 
 [project.scripts]
 howsure = "howsure.cli:main"
@@ -28,8 +28,21 @@ howsure = "howsure.cli:main"
 Homepage = "https://github.com/Sailaukan/howsure"
 Issues = "https://github.com/Sailaukan/howsure/issues"
 
+[tool.hatch.version]
+path = "src/howsure/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/howsure"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["B905"]  # zip() stopping at the shortest is fine here: pairs always come from one source
+
+[tool.ruff.lint.isort]
+known-first-party = ["howsure"]

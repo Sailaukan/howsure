@@ -8,7 +8,7 @@ production rule would: take the most likely option, act on it if it is confident
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from collections.abc import Sequence
 
 EPS = 1e-6
 
@@ -212,20 +212,6 @@ def binom_cdf(k: int, n: int, p: float) -> float:
     return min(1.0, total)
 
 
-def upper_bound(k: int, n: int, delta: float) -> float:
-    """One-sided Clopper-Pearson bound: the true error rate is below this with prob 1 - delta."""
-    if n == 0:
-        return 1.0
-    lo, hi = k / n, 1.0
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        if binom_cdf(k, n, mid) > delta:
-            lo = mid
-        else:
-            hi = mid
-    return hi
-
-
 def risk_curve(rows: Sequence) -> list[tuple[float, int, int]]:
     """(threshold, examples at or above it, errors among them), from the most confident down."""
     items = sorted(((max(p), int(argmax(p) != y)) for p, y in rows), key=lambda t: -t[0])
@@ -238,11 +224,25 @@ def risk_curve(rows: Sequence) -> list[tuple[float, int, int]]:
     return curve
 
 
-def expected_cutoff(curve: Sequence, max_error: float):
-    """Lowest threshold whose observed error rate is within the target (max coverage)."""
+def min_examples(max_error: float, delta: float) -> int:
+    """The fewest examples that can show an error rate is within max_error, even with zero errors."""
+    return math.ceil(math.log(delta) / math.log(1 - max_error))
+
+
+def expected_cutoff(curve: Sequence, max_error: float, delta: float):
+    """Lowest threshold whose error rate, plus one standard error, is within the target (max coverage).
+
+    The margin keeps a lucky small sample from passing, and fades as examples grow. Thresholds
+    covering too few examples to show the target at all are skipped, so a target the model can't
+    reach gets no cutoff rather than a small slice that happened to look good.
+    """
+    n_min = min_examples(max_error, delta)
     best = None
     for t, n, k in curve:
-        if k / n <= max_error:
+        if n < n_min:
+            continue
+        smoothed = (k + 1) / (n + 2)  # so zero errors still has a margin
+        if k / n + math.sqrt(smoothed * (1 - smoothed) / n) <= max_error:
             best = (t, n, k)
     return best
 
@@ -256,7 +256,7 @@ def safe_cutoff(curve: Sequence, max_error: float, delta: float):
     Thresholds covering fewer than n_min examples can't pass even with zero errors and are
     skipped (that also depends only on confidences).
     """
-    n_min = math.ceil(math.log(delta) / math.log(1 - max_error))
+    n_min = min_examples(max_error, delta)
     best = None
     for t, n, k in curve:
         if n < n_min:
@@ -266,6 +266,31 @@ def safe_cutoff(curve: Sequence, max_error: float, delta: float):
         else:
             break
     return best
+
+
+def answer_floor(rows: Sequence, truths: Sequence, max_error: float, delta: float) -> float:
+    """The confidence a cutoff must stay above, so no true answer is clearly auto-handled wrong too often.
+
+    The overall error rate lets a model miss almost every rare case: 0.5% fraud is only 0.5% errors
+    even if all of it is called legitimate. So each true answer gets its own binomial test. A few
+    examples can only show a large breach, which keeps noise from blocking a cutoff.
+    """
+    wrong: dict = {}
+    counts: dict = {}
+    for (probs, y), truth in zip(rows, truths):
+        counts[truth] = counts.get(truth, 0) + 1
+        if argmax(probs) != y:
+            wrong.setdefault(truth, []).append(max(probs))
+    delta /= max(1, len(counts))  # one test per answer
+    floor = -1.0
+    for truth, confidences in wrong.items():
+        confidences.sort(reverse=True)
+        allowed = 0
+        while allowed < len(confidences) and 1 - binom_cdf(allowed, counts[truth], max_error) > delta:
+            allowed += 1
+        if allowed < len(confidences):
+            floor = max(floor, confidences[allowed])
+    return floor
 
 
 def safe_coverage_with_more(curve: Sequence, max_error: float, delta: float, factor: int) -> float:
